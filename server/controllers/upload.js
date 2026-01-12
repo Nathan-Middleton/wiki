@@ -46,7 +46,10 @@ router.post('/u', (req, res, next) => {
   // Get folder Id
   let folderId = null
   try {
-    const folderRaw = _.get(req, 'body.mediaUpload', false)
+    let folderRaw = _.get(req, 'body.mediaUploadMeta', _.get(req, 'body.mediaUpload', false))
+    if (Array.isArray(folderRaw)) {
+      folderRaw = folderRaw.find(item => typeof item === 'string') || false
+    }
     if (folderRaw) {
       folderId = _.get(JSON.parse(folderRaw), 'folderId', null)
       if (folderId === 0) {
