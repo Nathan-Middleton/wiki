@@ -171,6 +171,8 @@ import { get, sync } from 'vuex-pathify'
 import markdownHelp from './markdown/help.vue'
 import gql from 'graphql-tag'
 import DOMPurify from 'dompurify'
+import Cookies from 'js-cookie'
+import sanitizeFilename from 'sanitize-filename'
 
 /* global siteConfig, siteLangs */
 
@@ -432,22 +434,82 @@ export default {
     onCmInput: _.debounce(function (newContent) {
       this.processContent(newContent)
     }, 600),
-    onCmPaste (cm, ev) {
-      // const clipItems = (ev.clipboardData || ev.originalEvent.clipboardData).items
-      // for (let clipItem of clipItems) {
-      //   if (_.startsWith(clipItem.type, 'image/')) {
-      //     const file = clipItem.getAsFile()
-      //     const reader = new FileReader()
-      //     reader.onload = evt => {
-      //       this.$store.commit(`loadingStart`, 'editor-paste-image')
-      //       this.insertAfter({
-      //         content: `![${file.name}](${evt.target.result})`,
-      //         newLine: true
-      //       })
-      //     }
-      //     reader.readAsDataURL(file)
-      //   }
-      // }
+    async onCmPaste (cm, ev) {
+      const clipItems = (ev.clipboardData || ev.originalEvent.clipboardData || {}).items || []
+      const imageFiles = Array.from(clipItems)
+        .filter(item => _.startsWith(item.type, 'image/'))
+        .map(item => item.getAsFile())
+        .filter(Boolean)
+      if (imageFiles.length < 1) {
+        return
+      }
+      ev.preventDefault()
+      await this.uploadImageFiles(imageFiles)
+    },
+    async onCmDrop (cm, ev) {
+      const files = Array.from((ev.dataTransfer && ev.dataTransfer.files) || [])
+      const imageFiles = files.filter(file => _.startsWith(file.type, 'image/'))
+      if (imageFiles.length < 1) {
+        return
+      }
+      ev.preventDefault()
+      await this.uploadImageFiles(imageFiles)
+    },
+    sanitizeAssetFilename (filename) {
+      return sanitizeFilename(filename.toLowerCase().replace(/[\s,;#]+/g, '_'))
+    },
+    async uploadImageFiles (files) {
+      const jwtToken = Cookies.get('jwt')
+      const maxFileSize = _.get(siteConfig, 'uploadMaxFileSize', 0)
+      for (const file of files) {
+        if (!file || !_.startsWith(file.type, 'image/')) {
+          continue
+        }
+        if (maxFileSize > 0 && file.size > maxFileSize) {
+          this.$store.commit('showNotification', {
+            message: this.$t('editor:assets.uploadFailed'),
+            style: 'error',
+            icon: 'error'
+          })
+          continue
+        }
+        const sanitizedName = this.sanitizeAssetFilename(file.name || 'image')
+        if (!sanitizedName) {
+          this.$store.commit('showNotification', {
+            message: this.$t('editor:assets.uploadFailed'),
+            style: 'error',
+            icon: 'error'
+          })
+          continue
+        }
+        const formData = new FormData()
+        formData.append('mediaUpload', file, sanitizedName)
+        formData.append('mediaUploadMeta', JSON.stringify({ folderId: 0 }))
+        this.$store.commit(`loadingStart`, 'editor-upload-image')
+        try {
+          const response = await fetch('/u', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${jwtToken}`
+            },
+            body: formData
+          })
+          if (!response.ok) {
+            throw new Error('Upload failed')
+          }
+          this.insertAfter({
+            content: `![${file.name}](/${sanitizedName})`,
+            newLine: true
+          })
+        } catch (err) {
+          this.$store.commit('showNotification', {
+            message: this.$t('editor:assets.uploadFailed'),
+            style: 'error',
+            icon: 'error'
+          })
+        }
+        this.$store.commit(`loadingStop`, 'editor-upload-image')
+      }
     },
     processContent (newContent) {
       linesMap = []
@@ -816,6 +878,7 @@ export default {
     // Handle special paste
 
     this.cm.on('paste', this.onCmPaste)
+    this.cm.on('drop', this.onCmDrop)
 
     // Render initial preview
 
@@ -857,6 +920,10 @@ export default {
   },
   beforeDestroy() {
     this.$root.$off('editorInsert')
+    if (this.cm) {
+      this.cm.off('paste', this.onCmPaste)
+      this.cm.off('drop', this.onCmDrop)
+    }
   }
 }
 </script>
